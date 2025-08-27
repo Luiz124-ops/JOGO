@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <title>Dimensões — Jogo</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0b0d14;
+      --panel: rgba(255,255,255,0.06);
+      --text: #e8eef8;
+      --accent: #7bed9f;
+    }
+    *{box-sizing:border-box;margin:0;padding:0}
+    html,body{height:100%;background:var(--bg);color:var(--text);font-family:Inter,system-ui,Segoe UI,Arial}
+    #wrap{display:flex;flex-direction:column;height:100%}
+    header{padding:12px 18px;display:flex;gap:18px;align-items:center}
+    .meta{background:var(--panel);padding:8px 12px;border-radius:8px;font-size:14px}
+    #canvasWrap{flex:1;display:grid;place-items:center;width:100%;height:100%}
+    canvas{
+      border-radius:8px;
+      box-shadow:0 6px 30px rgba(0,0,0,0.6);
+      background:#090912;
+      width:100%;
+      height:100%;
+      max-width:100%;
+      max-height:100%;
+    }
+    #hud{position:fixed;right:18px;top:18px;display:flex;flex-direction:column;gap:8px;z-index:5}
+    .badge{background:rgba(0,0,0,0.45);padding:8px 10px;border-radius:8px;font-size:14px}
+    .controls{position:fixed;left:18px;bottom:18px;background:rgba(0,0,0,0.45);padding:10px;border-radius:8px;font-size:13px}
+    button{background:var(--accent);border:none;padding:8px 10px;border-radius:6px;color:#012;cursor:pointer}
+    .dimA{display:inline-block;width:12px;height:12px;background:#6fb8ff;border-radius:3px;margin-right:6px}
+    .dimB{display:inline-block;width:12px;height:12px;background:#ffcc4d;border-radius:3px;margin-right:6px}
+
+    /* Tela de troféu */
+    #trophyScreen {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      color: gold;
+      font-size: 28px;
+      font-weight: bold;
+      z-index: 999;
+      visibility: hidden;
+    }
+    #trophyEmoji {
+      font-size: 80px;
+      margin-bottom: 20px;
+      animation: bounce 1s infinite;
+    }
+    @keyframes bounce {
+      0%,100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <header>
+      <div class="meta">Dimensões — alterna com <strong>Espaço</strong></div>
+      <div class="meta">Mover: <strong>Setas</strong></div>
+      <div class="meta">Alvo: chegar na saída verde</div>
+      <div style="flex:1"></div>
+      <div class="meta">Nível atual: <strong id="levelDisplay">1</strong></div>
+    </header>
+
+    <div id="canvasWrap">
+      <canvas id="game" tabindex="0"></canvas>
+    </div>
+
+    <div id="hud">
+      <div class="badge">Dimensão: <span id="dimIndicator" style="margin-left:8px">A</span></div>
+      <div class="badge">Status: <span id="status">Pronto</span></div>
+    </div>
+
+    <div class="controls" id="controls">
+      <div style="margin-bottom:8px"><span class="dimA"></span>Dimensão A — paredes azuladas</div>
+      <div style="margin-bottom:8px"><span class="dimB"></span>Dimensão B — paredes amareladas</div>
+      <div style="margin-top:6px">Ao alcançar a saída, próximo nível aumenta a grade.</div>
+      <div style="margin-top:8px"><button id="restartBtn">Reiniciar nível</button></div>
+    </div>
+  </div>
+
+  <!-- Tela de troféu -->
+  <div id="trophyScreen">
+    <div id="trophyEmoji">🏆</div>
+    <div id="trophyMessage">Parabéns! Nível concluído!</div>
+    <div style="margin-top:12px; font-size:16px; color:white">Pressione qualquer tecla para continuar...</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+    const levelDisplay = document.getElementById('levelDisplay');
+    const dimIndicator = document.getElementById('dimIndicator');
+    const statusText = document.getElementById('status');
+    const restartBtn = document.getElementById('restartBtn');
+    const trophyScreen = document.getElementById('trophyScreen');
+    const trophyMessage = document.getElementById('trophyMessage');
+
+    canvas.focus();
+    canvas.addEventListener('click', () => canvas.focus());
+
+    function fitCanvas() {
+      const container = document.getElementById('canvasWrap');
+      const maxW = container.clientWidth;
+      const maxH = container.clientHeight;
+      canvas.width = Math.floor(maxW);
+      canvas.height = Math.floor(maxH);
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      fitCanvas();
+      rebuildCurrentLevel();
+    });
+    resizeObserver.observe(document.getElementById('canvasWrap'));
+
+    class Cell {
+      constructor(i, j) {
+        this.i = i; this.j = j;
+        this.walls = [true, true, true, true];
+      }
+    }
+    function index(i, j, cols, rows) {
+      if (i < 0 || j < 0 || i >= cols || j >= rows) return -1;
+      return i + j * cols;
+    }
+    function generateMaze(cols, rows) {
+      const grid = [];
+      for (let j = 0; j < rows; j++) for (let i = 0; i < cols; i++) grid.push(new Cell(i, j));
+      const stack = [];
+      let current = grid[0];
+      const visited = new Set();
+      visited.add(index(current.i, current.j, cols, rows));
+      stack.push(current);
+
+      while (stack.length) {
+        current = stack[stack.length - 1];
+        const neighbors = [];
+        const top = grid[index(current.i, current.j - 1, cols, rows)];
+        const right = grid[index(current.i + 1, current.j, cols, rows)];
+        const bottom = grid[index(current.i, current.j + 1, cols, rows)];
+        const left = grid[index(current.i - 1, current.j, cols, rows)];
+
+        if (top && !visited.has(index(top.i, top.j, cols, rows))) neighbors.push(top);
+        if (right && !visited.has(index(right.i, right.j, cols, rows))) neighbors.push(right);
+        if (bottom && !visited.has(index(bottom.i, bottom.j, cols, rows))) neighbors.push(bottom);
+        if (left && !visited.has(index(left.i, left.j, cols, rows))) neighbors.push(left);
+
+        if (neighbors.length) {
+          const next = neighbors[Math.floor(Math.random() * neighbors.length)];
+          const dx = current.i - next.i;
+          if (dx === 1) { current.walls[3] = false; next.walls[1] = false; }
+          if (dx === -1) { current.walls[1] = false; next.walls[3] = false; }
+          const dy = current.j - next.j;
+          if (dy === 1) { current.walls[0] = false; next.walls[2] = false; }
+          if (dy === -1) { current.walls[2] = false; next.walls[0] = false; }
+
+          visited.add(index(next.i, next.j, cols, rows));
+          stack.push(next);
+        } else {
+          stack.pop();
+        }
+      }
+      return grid;
+    }
+
+    let level = 1;
+    let cols, rows, cellSize;
+    let mazeA = [], mazeB = [];
+    let playerCell = {i:0,j:0};
+    let exitCell = {i:0,j:0};
+    let currentDim = 'A';
+    let canMove = true;
+
+    function computeGridSizeForLevel(l) {
+      const baseCols = 9 + Math.floor((l-1)*1.2);
+      const baseRows = 7 + Math.floor((l-1)*1.0);
+      return {cols: Math.min(baseCols, 40), rows: Math.min(baseRows, 30)};
+    }
+    function buildLevel(l) {
+      const sizes = computeGridSizeForLevel(l);
+      cols = sizes.cols; rows = sizes.rows;
+      cellSize = Math.floor(Math.min(canvas.width / cols, canvas.height / rows));
+      mazeA = generateMaze(cols, rows);
+      mazeB = generateMaze(cols, rows);
+      playerCell = {i:0, j:0};
+      exitCell = {i: cols-1, j: rows-1};
+      currentDim = 'A';
+      levelDisplay.textContent = level;
+      dimIndicator.textContent = currentDim;
+      statusText.textContent = 'Pronto';
+    }
+    function rebuildCurrentLevel(){ buildLevel(level); draw(); }
+
+    canvas.addEventListener('keydown', (e)=>{
+      if (trophyScreen.style.visibility === 'visible') {
+        hideTrophy(); return;
+      }
+      if (!canMove) return;
+      const key = e.key;
+      let moved = false;
+      const g = (currentDim === 'A') ? mazeA : mazeB;
+      const idx = index(playerCell.i, playerCell.j, cols, rows);
+      const cell = g[idx];
+      if (!cell) return;
+
+      if (key === 'ArrowUp' || key==='w') { if (!cell.walls[0]) { playerCell.j--; moved = true; } }
+      if (key === 'ArrowRight' || key==='d') { if (!cell.walls[1]) { playerCell.i++; moved = true; } }
+      if (key === 'ArrowDown' || key==='s') { if (!cell.walls[2]) { playerCell.j++; moved = true; } }
+      if (key === 'ArrowLeft' || key==='a') { if (!cell.walls[3]) { playerCell.i--; moved = true; } }
+
+      if (key === ' ') {
+        currentDim = (currentDim === 'A') ? 'B' : 'A';
+        dimIndicator.textContent = currentDim;
+        draw();
+        return;
+      }
+
+      if (moved) { draw(); checkWin(); }
+    });
+
+    restartBtn.addEventListener('click', ()=>{ buildLevel(level); draw(); });
+
+    function checkWin() {
+      if (playerCell.i === exitCell.i && playerCell.j === exitCell.j) {
+        statusText.textContent = 'Saída alcançada!';
+        showTrophy();
+      }
+    }
+
+    function showTrophy() {
+      trophyMessage.textContent = `🏆 Parabéns! Você concluiu o nível ${level}!`;
+      trophyScreen.style.visibility = 'visible';
+      canMove = false;
+    }
+    function hideTrophy() {
+      trophyScreen.style.visibility = 'hidden';
+      level++;
+      buildLevel(level);
+      draw();
+      canMove = true;
+    }
+
+    function draw() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      const gridW = cellSize * cols;
+      const gridH = cellSize * rows;
+      const offsetX = Math.floor((canvas.width - gridW) / 2);
+      const offsetY = Math.floor((canvas.height - gridH) / 2);
+
+      ctx.fillStyle = '#06060a';
+      ctx.fillRect(offsetX - 6, offsetY - 6, gridW + 12, gridH + 12);
+
+      const g = (currentDim === 'A') ? mazeA : mazeB;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = (currentDim==='A') ? '#6fb8ff' : '#ffcc4d';
+      for (let c of g) {
+        const x = offsetX + c.i * cellSize;
+        const y = offsetY + c.j * cellSize;
+        if (c.walls[0]) { ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+cellSize,y); ctx.stroke(); }
+        if (c.walls[1]) { ctx.beginPath(); ctx.moveTo(x+cellSize,y); ctx.lineTo(x+cellSize,y+cellSize); ctx.stroke(); }
+        if (c.walls[2]) { ctx.beginPath(); ctx.moveTo(x+cellSize,y+cellSize); ctx.lineTo(x,y+cellSize); ctx.stroke(); }
+        if (c.walls[3]) { ctx.beginPath(); ctx.moveTo(x,y+cellSize); ctx.lineTo(x,y); ctx.stroke(); }
+      }
+
+      ctx.fillStyle = '#6fffa3';
+      ctx.fillRect(offsetX + exitCell.i * cellSize + cellSize*0.2, offsetY + exitCell.j * cellSize + cellSize*0.2, cellSize*0.6, cellSize*0.6);
+
+      ctx.fillStyle = '#ff6b6b';
+      ctx.fillRect(offsetX + playerCell.i * cellSize + cellSize*0.25, offsetY + playerCell.j * cellSize + cellSize*0.25, cellSize*0.5, cellSize*0.5);
+    }
+
+    function startGame() {
+      level = 1;
+      fitCanvas();
+      buildLevel(level);
+      draw();
+    }
+    startGame();
+  </script>
+</body>
+</html>
